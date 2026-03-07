@@ -1,16 +1,18 @@
 # Amazon Sniper Bot 🎯
 
-A high-performance stealth monitoring bot in Go that tracks the **Google Pixel 10 Pro 256GB** on Amazon.it. Sends instant Telegram alerts when the product becomes available below your target price.
+A high-performance stealth monitoring bot in Go that tracks **multiple Amazon products** and sends instant Telegram alerts when any product drops below your target price. Manage everything via an interactive inline-keyboard Telegram interface.
 
 ## Features
 
-- **TLS Fingerprint Spoofing** — Impersonates Chrome 124 at the TLS/JA3 level via `bogdanfinn/tls-client`
+- **Multi-Item Tracking** — Monitor multiple Amazon products simultaneously
+- **Inline Keyboard UI** — Tap-to-manage interface: add, edit, pause, remove items via buttons
+- **Per-Item Alerts** — Individual target prices and notification state per product
+- **TLS Fingerprint Spoofing** — Impersonates Chrome 124 at the TLS/JA3 level
 - **HTTP/2 Consistency** — Correct pseudo-header order, SETTINGS frame, and connection flow
-- **Exact Chrome Header Order** — Client Hints, Fetch Metadata, and all headers in real wire order
 - **Session Priming** — Visits Amazon homepage first to acquire legitimate session cookies
-- **User-Agent Rotation** — Rotates through a pool of 5 Chrome UAs (Win/Mac/Linux)
-- **Escalating Back-off** — 5min → 10min → 20min cooldown on anti-bot blocks, resets on success
-- **Randomized Polling** — 60s ± 5s jitter to avoid mechanical patterns
+- **User-Agent Rotation** — Rotates through a pool of Chrome UAs
+- **Escalating Back-off** — Progressive cooldown on anti-bot blocks, resets on success
+- **Randomized Polling** — Configurable interval with jitter to avoid mechanical patterns
 - **Graceful Shutdown** — Handles SIGINT/SIGTERM cleanly
 
 ## Quick Start
@@ -22,12 +24,14 @@ A high-performance stealth monitoring bot in Go that tracks the **Google Pixel 1
 
 ### 2. Setup
 ```bash
-# Clone and enter the project
 cd amazon-tracker
 
-# Copy and edit the environment file
+# Copy and edit the environment file (secrets only)
 cp .env.example .env
 # Edit .env with your Telegram credentials
+
+# Optionally pre-populate items (or use /add in Telegram)
+cp items.json.example items.json
 
 # Download dependencies
 go mod download
@@ -35,10 +39,7 @@ go mod download
 
 ### 3. Build & Run
 ```bash
-# Build
 go build -o sniper ./cmd/sniper
-
-# Run
 ./sniper
 ```
 
@@ -49,25 +50,71 @@ go run ./cmd/sniper
 
 ## Configuration
 
+### Environment Variables (`.env`)
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_TOKEN` | *(required)* | Bot token from @BotFather |
 | `CHAT_ID` | *(required)* | Your Telegram user ID |
-| `TARGET_URL` | `https://www.amazon.it/dp/B0FHL3385S` | Amazon product URL |
-| `ASIN` | `B0FHL3385S` | Amazon product ASIN |
-| `TARGET_PRICE` | `900.00` | Alert threshold in EUR |
+| `CHECK_INTERVAL` | `60` | Seconds between check cycles |
+| `SMART_NOTIFICATIONS` | `true` | Only alert on price changes |
+
+### Items File (`items.json`)
+
+Tracked items are stored in `items.json`. You can edit this file directly or manage items via Telegram commands.
+
+```json
+[
+  {
+    "id": 1,
+    "url": "https://www.amazon.it/dp/B0FHL3385S",
+    "target_price": 900.00,
+    "enabled": true
+  },
+  {
+    "id": 2,
+    "url": "https://www.amazon.it/dp/B0FHL38J26",
+    "target_price": 1000.00,
+    "enabled": true
+  }
+]
+```
+
+## Telegram Commands
+
+| Command | Description |
+|---------|-------------|
+| `/list` | Show all items as tappable buttons |
+| `/add` | Add a new item (interactive prompts) |
+| `/check` | Force check all enabled items |
+| `/status` | Show global settings |
+| `/setinterval` | Set check interval in seconds |
+| `/smart` | Toggle smart notifications |
+| `/help` | Show command list |
+
+### Inline Item Actions
+
+Tap any item from `/list` to see its detail card with action buttons:
+
+- **✏️ Edit** → Change URL or target price
+- **🔍 Check** → Force check this item
+- **⏸ Pause / ▶️ Resume** → Toggle tracking
+- **🗑 Remove** → Delete item (with confirmation)
+- **🔙 Back** → Return to item list
 
 ## Project Structure
 
 ```
 amazon-tracker/
-├── cmd/sniper/main.go              # Entry point & monitoring loop
+├── cmd/sniper/main.go              # Entry point & multi-item monitoring loop
 ├── internal/
-│   ├── config/config.go            # .env loading & Config struct
+│   ├── config/config.go            # Global config (.env) + ItemStore (items.json)
+│   ├── config/config_test.go       # Unit tests for ItemStore CRUD
 │   ├── client/client.go            # Stealth TLS client factory
 │   ├── scraper/scraper.go          # Page fetching & DOM parsing
-│   └── notifier/notifier.go        # Telegram Bot API integration
+│   └── telegram/telegram.go        # Telegram bot with inline keyboards
 ├── .env.example
+├── items.json.example
 ├── go.mod
 └── README.md
 ```
