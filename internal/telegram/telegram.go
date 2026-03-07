@@ -35,30 +35,18 @@ func New(cfg *config.Config, store *config.ItemStore, wakeChan chan struct{}, fo
 
 	api.Debug = false
 
-	commands := tgbotapi.NewSetMyCommands(
-		tgbotapi.BotCommand{Command: "start", Description: "Show welcome message"},
-		tgbotapi.BotCommand{Command: "help", Description: "Show available commands"},
-		tgbotapi.BotCommand{Command: "list", Description: "Show all tracked items"},
-		tgbotapi.BotCommand{Command: "add", Description: "Add a new item to track"},
-		tgbotapi.BotCommand{Command: "check", Description: "Force check all enabled items"},
-		tgbotapi.BotCommand{Command: "status", Description: "Show global settings"},
-		tgbotapi.BotCommand{Command: "setinterval", Description: "Set poll interval in seconds"},
-		tgbotapi.BotCommand{Command: "smart", Description: "Toggle smart notifications"},
-		tgbotapi.BotCommand{Command: "lang", Description: "Change language"},
-		tgbotapi.BotCommand{Command: "cancel", Description: "Cancel current prompt"},
-	)
-	if _, err := api.Request(commands); err != nil {
-		log.Printf("[WARN] Failed to register telegram commands: %v", err)
-	}
-
-	return &Bot{
+	b := &Bot{
 		api:            api,
 		cfg:            cfg,
 		store:          store,
 		lang:           GetLang(cfg.Language()),
 		wakeChan:       wakeChan,
 		forceCheckChan: forceCheckChan,
-	}, nil
+	}
+
+	b.registerCommands()
+
+	return b, nil
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -139,6 +127,7 @@ func (b *Bot) StartReceiver() {
 				if update.CallbackQuery.Message != nil && update.CallbackQuery.Message.Chat.ID != b.cfg.ChatID() {
 					continue
 				}
+				b.sendTyping()
 				b.handleCallback(update.CallbackQuery)
 				continue
 			}
@@ -152,6 +141,7 @@ func (b *Bot) StartReceiver() {
 				continue
 			}
 
+			b.sendTyping()
 			if update.Message.IsCommand() {
 				b.handleCommand(update.Message.Command(), update.Message.CommandArguments())
 			} else if b.awaitingState != "" {
@@ -419,6 +409,7 @@ func (b *Bot) handleCallback(cq *tgbotapi.CallbackQuery) {
 			log.Printf("[WARN] Failed to save language: %v", err)
 		}
 		b.lang = GetLang(code)
+		b.registerCommands()
 		name := "English"
 		if code == "it" {
 			name = "Italiano"
@@ -591,6 +582,30 @@ func (b *Bot) wake() {
 	case b.wakeChan <- struct{}{}:
 	default:
 	}
+}
+
+func (b *Bot) registerCommands() {
+	L := b.lang
+	commands := tgbotapi.NewSetMyCommands(
+		tgbotapi.BotCommand{Command: "start", Description: L.CmdDescStart},
+		tgbotapi.BotCommand{Command: "help", Description: L.CmdDescHelp},
+		tgbotapi.BotCommand{Command: "list", Description: L.CmdDescList},
+		tgbotapi.BotCommand{Command: "add", Description: L.CmdDescAdd},
+		tgbotapi.BotCommand{Command: "check", Description: L.CmdDescCheck},
+		tgbotapi.BotCommand{Command: "status", Description: L.CmdDescStatus},
+		tgbotapi.BotCommand{Command: "setinterval", Description: L.CmdDescSetInterval},
+		tgbotapi.BotCommand{Command: "smart", Description: L.CmdDescSmart},
+		tgbotapi.BotCommand{Command: "lang", Description: L.CmdDescLang},
+		tgbotapi.BotCommand{Command: "cancel", Description: L.CmdDescCancel},
+	)
+	if _, err := b.api.Request(commands); err != nil {
+		log.Printf("[WARN] Failed to register telegram commands: %v", err)
+	}
+}
+
+func (b *Bot) sendTyping() {
+	action := tgbotapi.NewChatAction(b.cfg.ChatID(), tgbotapi.ChatTyping)
+	b.api.Send(action)
 }
 
 func (b *Bot) parseID(data, prefix string) int {

@@ -9,6 +9,18 @@ type Lang struct {
 	OrCancel        string
 	ItemNotFound    string
 
+	// ── Command Menu Descriptions (Telegram /setMyCommands) ────────
+	CmdDescStart       string
+	CmdDescHelp        string
+	CmdDescList        string
+	CmdDescAdd         string
+	CmdDescCheck       string
+	CmdDescStatus      string
+	CmdDescSetInterval string
+	CmdDescSmart       string
+	CmdDescLang        string
+	CmdDescCancel      string
+
 	// ── Help ────────────────────────────────────────────────────────
 	HelpTitle       string
 	HelpItemMgmt    string
@@ -123,6 +135,17 @@ var langEN = Lang{
 	OrCancel:        "<i>(Or type /cancel)</i>",
 	ItemNotFound:    "❌ Item not found.",
 
+	CmdDescStart:       "Show welcome message",
+	CmdDescHelp:        "Show available commands",
+	CmdDescList:        "Show all tracked items",
+	CmdDescAdd:         "Add a new item to track",
+	CmdDescCheck:       "Force check all enabled items",
+	CmdDescStatus:      "Show global settings",
+	CmdDescSetInterval: "Set poll interval in seconds",
+	CmdDescSmart:       "Toggle smart notifications",
+	CmdDescLang:        "Change language",
+	CmdDescCancel:      "Cancel current prompt",
+
 	HelpTitle:       "🤖 <b>Amazon Sniper Bot</b>",
 	HelpItemMgmt:    "<b>Item Management</b>",
 	HelpList:        "/list - Show all tracked items (tap to manage)",
@@ -224,6 +247,17 @@ var langIT = Lang{
 	PromptCancelled: "🚫 Azione annullata.",
 	OrCancel:        "<i>(Oppure digita /cancel)</i>",
 	ItemNotFound:    "❌ Articolo non trovato.",
+
+	CmdDescStart:       "Mostra messaggio di benvenuto",
+	CmdDescHelp:        "Mostra i comandi disponibili",
+	CmdDescList:        "Mostra tutti gli articoli monitorati",
+	CmdDescAdd:         "Aggiungi un nuovo articolo",
+	CmdDescCheck:       "Controlla subito tutti gli articoli",
+	CmdDescStatus:      "Mostra impostazioni globali",
+	CmdDescSetInterval: "Imposta intervallo di controllo",
+	CmdDescSmart:       "Attiva/disattiva notifiche intelligenti",
+	CmdDescLang:        "Cambia lingua",
+	CmdDescCancel:      "Annulla il prompt corrente",
 
 	HelpTitle:       "🤖 <b>Amazon Sniper Bot</b>",
 	HelpItemMgmt:    "<b>Gestione Articoli</b>",
