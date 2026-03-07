@@ -1,284 +1,228 @@
-// Package scraper fetches an Amazon product page and extracts price/availability.
+// Package scraper handles fetching and parsing Amazon product pages.
 package scraper
 
 import (
 	"fmt"
 	"io"
-	"log"
+	"net/http"
 	"strconv"
 	"strings"
-	"time"
-
-	"math/rand"
 
 	"github.com/PuerkitoBio/goquery"
-
 	tls_client "github.com/bogdanfinn/tls-client"
 
 	"amazon-tracker/internal/client"
 )
 
-// Result contains the parsed data from a product page scrape.
+// Result holds the parsed data from the Amazon product page.
 type Result struct {
 	Price     float64
+	UsedPrice float64 // Added field for second-hand prices
 	Available bool
-	Condition string // "new", "used", or "none"
+	Condition string // "new" or "used"
 }
 
-// Scraper manages fetching and parsing an Amazon product page.
+// Scraper handles the DOM parsing of an Amazon product page.
 type Scraper struct {
-	client     tls_client.HttpClient
-	productURL string
-	baseURL    string
+	httpClient tls_client.HttpClient
+	url        string
 }
 
-// New creates a Scraper for the given product URL.
-func New(c tls_client.HttpClient, productURL string) *Scraper {
-	return &Scraper{
-		client:     c,
-		productURL: productURL,
-		baseURL:    "https://www.amazon.it",
-	}
-}
-
-// PrimeSession performs a GET to the Amazon homepage to acquire session cookies
-// (session-id, ubid-acbit, i18n-prefs, sp-cdn) before scraping the product page.
-// This mimics a real user who browses from the homepage.
-func (s *Scraper) PrimeSession() error {
-	req, err := client.BuildRequest(s.baseURL)
-	if err != nil {
-		return fmt.Errorf("prime session: build request: %w", err)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("prime session: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Drain the body to allow connection reuse.
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	// Random pause to simulate a human reading the homepage (2-4s).
-	pause := 2*time.Second + time.Duration(rand.Intn(2000))*time.Millisecond
-	time.Sleep(pause)
-
-	return nil
-}
-
-// Check fetches the product page and returns a Result with price and availability.
-// Returns an error with the HTTP status code embedded for the caller to handle
-// rate-limiting (403/503).
-func (s *Scraper) Check() (*Result, error) {
-	req, err := client.BuildRequest(s.productURL)
-	if err != nil {
-		return nil, fmt.Errorf("check: build request: %w", err)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("check: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 403 || resp.StatusCode == 503 {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, &BlockedError{StatusCode: resp.StatusCode}
-	}
-
-	if resp.StatusCode != 200 {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("check: unexpected status %d", resp.StatusCode)
-	}
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("check: parse HTML: %w", err)
-	}
-
-	return parseProduct(doc), nil
-}
-
-// parseProduct extracts the NEW product price and availability from the page.
-//
-// Amazon product pages have several price locations:
-//   - Recommendation carousels (.cerberus / .lpo widgets) — WRONG, other products
-//   - #usedOnlyBuybox — used/renewed offers only
-//   - #newBuyBox or #corePrice_feature_div — new item price
-//   - .priceToPay inside the main buybox — primary display price
-//   - #aod-ingress-link — "other sellers" link price
-//
-// We specifically target the NEW offer price and ignore used/carousel prices.
-func parseProduct(doc *goquery.Document) *Result {
-	result := &Result{}
-
-	// ── Detect buybox type ──────────────────────────────────────────────
-	// If #usedOnlyBuybox exists AND there's no #newBuyBox / #corePrice_feature_div,
-	// then only used/renewed offers are available — no new product for sale.
-	hasUsedOnlyBuybox := doc.Find("#usedOnlyBuybox").Length() > 0
-	hasNewBuyBox := doc.Find("#newBuyBox").Length() > 0
-	hasCorePrice := doc.Find("#corePrice_feature_div").Length() > 0
-	hasNewAddToCart := doc.Find("#add-to-cart-button").Length() > 0
-
-	// Also check the accordion-based buybox for new offers
-	hasNewAccordion := false
-	doc.Find("#buyBoxAccordion .a-accordion-row, .dp-accordion-row").Each(func(i int, s *goquery.Selection) {
-		txt := strings.ToLower(s.Text())
-		if strings.Contains(txt, "nuovo") || strings.Contains(txt, "compra nuovo") {
-			hasNewAccordion = true
-		}
-	})
-
-	isNewAvailable := hasNewBuyBox || hasCorePrice || hasNewAddToCart || hasNewAccordion
-
-	if hasUsedOnlyBuybox && !isNewAvailable {
-		// Page only shows used/renewed offers — no new product.
-		result.Condition = "used"
-		result.Available = false
-		result.Price = 0
-
-		// Still log the used price for informational purposes.
-		usedPrice := extractPriceFromContainer(doc, "#usedOnlyBuybox")
-		if usedPrice > 0 {
-			log.Printf("[scraper] Used-only buybox detected. Lowest used price: %.2f EUR (ignoring, want new)", usedPrice)
-		} else {
-			log.Println("[scraper] Used-only buybox detected, no new offer available")
-		}
-		return result
-	}
-
-	// ── Extract NEW price ───────────────────────────────────────────────
-	// Try several selectors in order of reliability for the NEW product price.
-	var price float64
-
-	// 1. Accordion buybox: look for the ID starting with "newAccordionRow" (e.g., #newAccordionRow_0)
-	//    This is the most robust way to find the NEW price on multi-offer pages.
-	if price == 0 && hasNewAccordion {
-		doc.Find("[id^='newAccordionRow'] .a-price-whole").Each(func(i int, s *goquery.Selection) {
-			if price > 0 {
-				return
-			}
-			price = extractPriceFromElement(s)
-		})
-
-		// Fallback for accordion text search if ID isn't there
-		if price == 0 {
-			doc.Find("#buyBoxAccordion .a-accordion-row, .dp-accordion-row").Each(func(i int, s *goquery.Selection) {
-				if price > 0 {
-					return
-				}
-				txt := strings.ToLower(s.Text())
-				if strings.Contains(txt, "nuovo") || strings.Contains(txt, "compra nuovo") {
-					whole := s.Find(".a-price-whole").First()
-					price = extractPriceFromElement(whole)
-				}
-			})
-		}
-	}
-
-	// 2. #newBuyBox is used on some product pages for the new offer.
-	if price == 0 && hasNewBuyBox {
-		price = extractPriceFromContainer(doc, "#newBuyBox")
-	}
-
-	// 3. #corePrice_feature_div contains the price for new items on standard pages.
-	// We only use this if we didn't find an accordion, because corePrice can contain both new and used prices!
-	if price == 0 && hasCorePrice && !hasNewAccordion {
-		price = extractPriceFromContainer(doc, "#corePrice_feature_div")
-	}
-
-	// 4. The .priceToPay element inside the buybox (NOT inside carousels/widgets).
-	//    This is shown as the main price on the product page when the new offer is active.
-	if price == 0 && !hasNewAccordion {
-		doc.Find("#desktop_buybox .priceToPay .a-price-whole, #buybox .priceToPay .a-price-whole").Each(func(i int, s *goquery.Selection) {
-			if price > 0 {
-				return // already found
-			}
-			price = extractPriceFromElement(s)
-		})
-	}
-
-	// 5. Fallback: the .apex-core-price-identifier container (used on some layouts).
-	if price == 0 && !hasNewAccordion {
-		price = extractPriceFromContainer(doc, ".apex-core-price-identifier")
-	}
-
-	result.Price = price
-
-	// ── Availability ────────────────────────────────────────────────────
-	// For a new item, the #add-to-cart-button must exist (not #add-to-cart-button-ubb).
-	// Also check the availability text.
-	availText := strings.TrimSpace(doc.Find("#availability").Text())
-	isUnavailable := strings.Contains(availText, "Attualmente non disponibile") ||
-		strings.Contains(availText, "Non disponibile")
-
-	if hasNewAddToCart {
-		result.Available = true
-		result.Condition = "new"
-	} else if isNewAvailable && !isUnavailable && price > 0 {
-		result.Available = true
-		result.Condition = "new"
-	} else {
-		result.Available = false
-		if isNewAvailable {
-			result.Condition = "new"
-		} else {
-			result.Condition = "none"
-		}
-	}
-
-	return result
-}
-
-// extractPriceFromContainer finds the first .a-price-whole inside the given
-// CSS selector container and returns the parsed price.
-func extractPriceFromContainer(doc *goquery.Document, containerSelector string) float64 {
-	container := doc.Find(containerSelector)
-	if container.Length() == 0 {
-		return 0
-	}
-	whole := container.Find(".a-price-whole").First()
-	return extractPriceFromElement(whole)
-}
-
-// extractPriceFromElement parses an .a-price-whole element and its sibling
-// .a-price-fraction into a float64.
-// Amazon Italy uses the format "1.049,00" (dot = thousands, comma = decimal).
-func extractPriceFromElement(whole *goquery.Selection) float64 {
-	if whole == nil || whole.Length() == 0 {
-		return 0
-	}
-
-	wholeText := strings.TrimSpace(whole.Text())
-	if wholeText == "" {
-		return 0
-	}
-
-	// Get the fraction from the sibling element.
-	fractionText := strings.TrimSpace(whole.Parent().Find(".a-price-fraction").First().Text())
-
-	// Remove trailing comma/dot separators from the whole part.
-	wholeText = strings.TrimRight(wholeText, ",.")
-	// Remove thousand separators (dots).
-	wholeText = strings.ReplaceAll(wholeText, ".", "")
-
-	if fractionText == "" {
-		fractionText = "00"
-	}
-
-	priceStr := wholeText + "." + fractionText
-	p, err := strconv.ParseFloat(priceStr, 64)
-	if err != nil {
-		return 0
-	}
-	return p
-}
-
-// BlockedError signals that Amazon returned an anti-bot response.
+// BlockedError is returned when Amazon blocks the request (403/503).
 type BlockedError struct {
 	StatusCode int
 }
 
 func (e *BlockedError) Error() string {
-	return fmt.Sprintf("blocked by Amazon (HTTP %d)", e.StatusCode)
+	return fmt.Errorf("amazon blocked request (HTTP %d)", e.StatusCode).Error()
+}
+
+// New initializes a Scraper for a given URL.
+func New(httpClient tls_client.HttpClient, url string) *Scraper {
+	return &Scraper{
+		httpClient: httpClient,
+		url:        url,
+	}
+}
+
+// PrimeSession fetches the Amazon homepage once to establish cookies (session-id)
+// and bypass initial captchas before hitting the actual product URL.
+func (s *Scraper) PrimeSession() error {
+	req, err := client.BuildRequest("https://www.amazon.it")
+	if err != nil {
+		return err
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 503 || resp.StatusCode == 403 {
+		return &BlockedError{StatusCode: resp.StatusCode}
+	}
+
+	// Drain the body to allow connection reuse.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// Check performs a single scrape of the product URL.
+func (s *Scraper) Check() (*Result, error) {
+	req, err := client.BuildRequest(s.url)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 503 || resp.StatusCode == 403 {
+		_, _ = io.Copy(io.Discard, resp.Body) // Drain body
+		return nil, &BlockedError{StatusCode: resp.StatusCode}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body) // Drain body
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("parse html: %w", err)
+	}
+
+	return s.parse(doc.Selection)
+}
+
+func (s *Scraper) parse(doc *goquery.Selection) (*Result, error) {
+	res := &Result{
+		Available: false,
+		Condition: "unknown",
+	}
+
+	// 1. Check if the product is completely out of stock
+	outOfStockText := doc.Find("#availability .a-color-state").Text()
+	if strings.Contains(outOfStockText, "Attualmente non disponibile") {
+		return res, nil
+	}
+	
+	hasUsedOnlyBuybox := doc.Find("#usedOnlyBuybox").Length() > 0
+	if hasUsedOnlyBuybox {
+		res.Condition = "used"
+		priceStr := doc.Find("#corePrice_feature_div .a-price-whole").First().Text()
+		if priceStr == "" {
+			// Fallback: If it's a completely used-only page, the price is often locked in the 'other sellers' ingress
+			priceStr = doc.Find("#aod-ingress-link .a-price-whole").First().Text()
+		}
+		priceStr = cleanPriceString(priceStr)
+		if priceStr != "" {
+			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
+				res.UsedPrice = p
+			}
+		}
+	}
+
+	// 2. Check the main BuyBox (often used if "new" is hidden behind "See All Buying Options")
+	isUsed := s.checkBuyBox(doc, res)
+
+	// Try parsing prices from the Accordion design if present
+	s.parseAccordionPrices(doc, res)
+
+	// If accordion parse didn't find a new price but the buybox is new, grab the buybox price
+	if res.Price == 0 && !isUsed && !hasUsedOnlyBuybox {
+		priceStr := doc.Find("#corePrice_feature_div .a-price-whole").First().Text()
+		priceStr = cleanPriceString(priceStr)
+		if priceStr != "" {
+			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
+				res.Price = p
+				res.Available = true
+				res.Condition = "new"
+			}
+		}
+	}
+
+	// 3. One last fallback to ensure we catch a UsedPrice if the page defaults to it
+	if res.UsedPrice == 0 {
+		priceStr := doc.Find("#aod-ingress-link .a-price-whole").First().Text()
+		priceStr = cleanPriceString(priceStr)
+		if priceStr != "" {
+			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
+				res.UsedPrice = p
+			}
+		}
+	}
+
+	// Special check for "buy-now" button availability (sometimes items show a price but aren't actually shippable)
+	hasNewAddToCart := doc.Find("#add-to-cart-button").Length() > 0
+	if !hasNewAddToCart && !isUsed && !hasUsedOnlyBuybox {
+		// Just to be safe, if we can't legitimately add it to cart without going to "other sellers", it's tough
+		// But accordion often handles this. We will trust the price parsing for now.
+	}
+
+	// If we only found a used condition in the buybox, mark it as unavailable for our NEW sniping purposes
+	if res.Condition == "used" {
+		res.Available = false
+	} else if res.Price > 0 {
+		res.Available = true
+		res.Condition = "new"
+	}
+
+	return res, nil
+}
+
+func (s *Scraper) checkBuyBox(doc *goquery.Selection, res *Result) bool {
+	conditionText := doc.Find("#merchant-info").Text()
+	buyboxStr := doc.Find("#buyBoxAccordion").Text()
+
+	if strings.Contains(strings.ToLower(conditionText), "usat") || strings.Contains(strings.ToLower(buyboxStr), "usat") {
+		res.Condition = "used"
+		priceStr := doc.Find("#corePrice_feature_div .a-price-whole").First().Text()
+		priceStr = cleanPriceString(priceStr)
+		if priceStr != "" {
+			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
+				res.UsedPrice = p
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func (s *Scraper) parseAccordionPrices(doc *goquery.Selection, res *Result) {
+	newRow := doc.Find("div[id^='newAccordionRow']")
+	if newRow.Length() > 0 {
+		priceStr := newRow.Find(".a-price-whole").First().Text()
+		priceStr = cleanPriceString(priceStr)
+		if priceStr != "" {
+			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
+				res.Price = p
+				res.Condition = "new"
+				res.Available = true
+			}
+		}
+	}
+
+	usedRow := doc.Find("div[id^='usedAccordionRow']")
+	if usedRow.Length() > 0 {
+		priceStr := usedRow.Find(".a-price-whole").First().Text()
+		priceStr = cleanPriceString(priceStr)
+		if priceStr != "" {
+			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
+				res.UsedPrice = p
+			}
+		}
+	}
+}
+
+// cleanPriceString sanitizes the Amazon format (e.g., "1.049,00" -> "1049.00")
+func cleanPriceString(s string) string {
+	s = strings.ReplaceAll(s, ".", "")
+	s = strings.ReplaceAll(s, ",", ".")
+	s = strings.TrimSpace(s)
+	return s
 }

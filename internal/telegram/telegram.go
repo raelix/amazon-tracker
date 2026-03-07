@@ -15,14 +15,15 @@ import (
 
 // Bot manages Telegram interactions.
 type Bot struct {
-	api           *tgbotapi.BotAPI
-	cfg           *config.Config
-	wakeChan      chan struct{}
-	awaitingState string // State machine for conversational prompts
+	api            *tgbotapi.BotAPI
+	cfg            *config.Config
+	wakeChan       chan struct{}
+	forceCheckChan chan struct{}
+	awaitingState  string // State machine for conversational prompts
 }
 
 // New creates a new Telegram Bot instance.
-func New(httpClient tls_client.HttpClient, cfg *config.Config, wakeChan chan struct{}) (*Bot, error) {
+func New(httpClient tls_client.HttpClient, cfg *config.Config, wakeChan chan struct{}, forceCheckChan chan struct{}) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramToken())
 	if err != nil {
 		return nil, fmt.Errorf("init telegram bot: %w", err)
@@ -35,6 +36,7 @@ func New(httpClient tls_client.HttpClient, cfg *config.Config, wakeChan chan str
 		tgbotapi.BotCommand{Command: "start", Description: "Show welcome message and commands"},
 		tgbotapi.BotCommand{Command: "help", Description: "Show available commands"},
 		tgbotapi.BotCommand{Command: "status", Description: "Show current configuration and state"},
+		tgbotapi.BotCommand{Command: "check", Description: "Force an immediate scrape to report prices"},
 		tgbotapi.BotCommand{Command: "track", Description: "Pause or resume scraping (start/stop)"},
 		tgbotapi.BotCommand{Command: "seturl", Description: "Change the Amazon product URL"},
 		tgbotapi.BotCommand{Command: "setprice", Description: "Set target price alert"},
@@ -47,10 +49,11 @@ func New(httpClient tls_client.HttpClient, cfg *config.Config, wakeChan chan str
 	}
 
 	return &Bot{
-		api:           api,
-		cfg:           cfg,
-		wakeChan:      wakeChan,
-		awaitingState: "",
+		api:            api,
+		cfg:            cfg,
+		wakeChan:       wakeChan,
+		forceCheckChan: forceCheckChan,
+		awaitingState:  "",
 	}, nil
 }
 
@@ -126,6 +129,15 @@ func (b *Bot) handleCommand(cmd string, args string) {
 	case "status":
 		b.awaitingState = ""
 		replyText = b.statusText()
+	case "check":
+		b.awaitingState = ""
+		replyText = "🔍 <b>Forcing an immediate check...</b>"
+		
+		// Send non-blocking signal to trigger a check
+		select {
+		case b.forceCheckChan <- struct{}{}:
+		default:
+		}
 	case "cancel":
 		b.awaitingState = ""
 		replyText = "🚫 Prompt cancelled."
@@ -240,6 +252,7 @@ func (b *Bot) helpText() string {
 	return `🤖 <b>Amazon Sniper Bot Commands</b>
 
 /status - Show current configuration
+/check - Force an immediate scrape and show results
 /track &lt;start|stop&gt; - Pause/resume scraping
 /seturl &lt;amazon_link&gt; - Change product URL
 /setprice &lt;number&gt; - Set target price alert
