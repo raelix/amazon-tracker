@@ -29,6 +29,9 @@ type Config struct {
 	jitterRange        time.Duration
 	coolOffBase        time.Duration
 	smartNotifications bool
+
+	// Language ("en" or "it")
+	language string
 }
 
 // Load reads the .env file (if present) and populates a Config from
@@ -48,6 +51,7 @@ func Load() (*Config, error) {
 		coolOffBase:   5 * time.Minute,
 
 		smartNotifications: true,
+		language:           "en",
 	}
 
 	if v := os.Getenv("CHECK_INTERVAL"); v != "" {
@@ -58,6 +62,10 @@ func Load() (*Config, error) {
 
 	if v := os.Getenv("SMART_NOTIFICATIONS"); v == "false" || v == "0" {
 		cfg.smartNotifications = false
+	}
+
+	if v := os.Getenv("LANGUAGE"); v == "it" || v == "en" {
+		cfg.language = v
 	}
 
 	if cfg.telegramToken == "" || cfg.chatID == 0 {
@@ -105,6 +113,12 @@ func (c *Config) SmartNotifications() bool {
 	return c.smartNotifications
 }
 
+func (c *Config) Language() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.language
+}
+
 // ── Config Setters ──────────────────────────────────────────────────────
 
 func (c *Config) SetCheckInterval(d time.Duration) error {
@@ -121,6 +135,13 @@ func (c *Config) SetSmartNotifications(enabled bool) error {
 	return c.saveEnv()
 }
 
+func (c *Config) SetLanguage(lang string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.language = lang
+	return c.saveEnv()
+}
+
 // saveEnv writes global settings back to .env, preserving secrets.
 func (c *Config) saveEnv() error {
 	envMap, err := godotenv.Read()
@@ -131,6 +152,7 @@ func (c *Config) saveEnv() error {
 	envMap["TELEGRAM_TOKEN"] = c.telegramToken
 	envMap["CHAT_ID"] = fmt.Sprintf("%d", c.chatID)
 	envMap["CHECK_INTERVAL"] = fmt.Sprintf("%.0f", c.checkInterval.Seconds())
+	envMap["LANGUAGE"] = c.language
 	if c.smartNotifications {
 		envMap["SMART_NOTIFICATIONS"] = "true"
 	} else {
