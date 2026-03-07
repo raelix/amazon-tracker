@@ -1,31 +1,36 @@
-// Package config loads environment variables and provides a typed Config struct.
+// Package config loads environment variables and provides a thread-safe Config struct
+// that can be modified concurrently by the Telegram bot and read by the scraper loop.
 package config
 
 import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
 // Config holds all runtime configuration for the sniper bot.
+// It is protected by a mutex to allow concurrent updates from Telegram commands.
 type Config struct {
-	// Telegram
-	TelegramToken string
-	ChatID        string
+	mu sync.RWMutex
+
+	// Telegram auth
+	telegramToken string
+	chatID        int64
 
 	// Product
-	TargetURL   string
-	ASIN        string
-	TargetPrice float64
+	targetURL   string
+	targetPrice float64
 
 	// Timing & Behavior
-	CheckInterval      time.Duration
-	JitterRange        time.Duration
-	CoolOffBase        time.Duration
-	SmartNotifications bool
+	checkInterval      time.Duration
+	jitterRange        time.Duration
+	coolOffBase        time.Duration
+	smartNotifications bool
+	isTracking         bool
 }
 
 // Load reads the .env file (if present) and populates a Config with
@@ -34,54 +39,169 @@ func Load() (*Config, error) {
 	// Best-effort load; missing .env is not fatal.
 	_ = godotenv.Load()
 
+	chatIDStr := os.Getenv("CHAT_ID")
+	chatID, _ := strconv.ParseInt(chatIDStr, 10, 64)
+
 	cfg := &Config{
-		TelegramToken: os.Getenv("TELEGRAM_TOKEN"),
-		ChatID:        os.Getenv("CHAT_ID"),
+		telegramToken: os.Getenv("TELEGRAM_TOKEN"),
+		chatID:        chatID,
 
-		TargetURL:   "https://www.amazon.it/dp/B0FHL3385S",
-		ASIN:        "B0FHL3385S",
-		TargetPrice: 900.00,
+		targetURL:   "https://www.amazon.it/dp/B0FHL3385S",
+		targetPrice: 900.00,
 
-		// CheckInterval will be set after parsing
-		JitterRange: 5 * time.Second,
-		CoolOffBase: 5 * time.Minute,
+		// Default timing
+		checkInterval: 60 * time.Second,
+		jitterRange:   5 * time.Second,
+		coolOffBase:   5 * time.Minute,
+
+		smartNotifications: true,
+		isTracking:         true,
 	}
 
 	intervalStr := os.Getenv("CHECK_INTERVAL")
-	if intervalStr == "" {
-		intervalStr = "30"
+	if intervalStr != "" {
+		if intervalSecs, err := strconv.Atoi(intervalStr); err == nil && intervalSecs > 0 {
+			cfg.checkInterval = time.Duration(intervalSecs) * time.Second
+		}
 	}
-	intervalSecs, err := strconv.Atoi(intervalStr)
-	if err != nil || intervalSecs <= 0 {
-		intervalSecs = 60
-	}
-	cfg.CheckInterval = time.Duration(intervalSecs) * time.Second
 
 	smartNotifStr := os.Getenv("SMART_NOTIFICATIONS")
 	if smartNotifStr == "false" || smartNotifStr == "0" {
-		cfg.SmartNotifications = false
-	} else {
-		cfg.SmartNotifications = true // Default to true
+		cfg.smartNotifications = false
 	}
 
-	// Allow overriding via env vars.
 	if v := os.Getenv("TARGET_URL"); v != "" {
-		cfg.TargetURL = v
-	}
-	if v := os.Getenv("ASIN"); v != "" {
-		cfg.ASIN = v
+		cfg.targetURL = v
 	}
 	if v := os.Getenv("TARGET_PRICE"); v != "" {
-		p, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid TARGET_PRICE: %w", err)
+		if p, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.targetPrice = p
 		}
-		cfg.TargetPrice = p
 	}
 
-	if cfg.TelegramToken == "" || cfg.ChatID == "" {
-		return nil, fmt.Errorf("TELEGRAM_TOKEN and CHAT_ID must be set (via .env or environment)")
+	if cfg.telegramToken == "" || cfg.chatID == 0 {
+		return nil, fmt.Errorf("TELEGRAM_TOKEN and CHAT_ID must be set and valid")
 	}
 
 	return cfg, nil
+}
+
+// ── Getters ─────────────────────────────────────────────────────────────
+
+func (c *Config) TelegramToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.telegramToken
+}
+
+func (c *Config) ChatID() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.chatID
+}
+
+func (c *Config) TargetURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.targetURL
+}
+
+func (c *Config) TargetPrice() float64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.targetPrice
+}
+
+func (c *Config) CheckInterval() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.checkInterval
+}
+
+func (c *Config) JitterRange() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.jitterRange
+}
+
+func (c *Config) CoolOffBase() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.coolOffBase
+}
+
+func (c *Config) SmartNotifications() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.smartNotifications
+}
+
+func (c *Config) IsTracking() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.isTracking
+}
+
+// ── Setters ─────────────────────────────────────────────────────────────
+
+func (c *Config) SetTargetURL(url string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.targetURL = url
+	return c.save()
+}
+
+func (c *Config) SetTargetPrice(price float64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.targetPrice = price
+	return c.save()
+}
+
+func (c *Config) SetCheckInterval(d time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.checkInterval = d
+	return c.save()
+}
+
+func (c *Config) SetSmartNotifications(enabled bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.smartNotifications = enabled
+	return c.save()
+}
+
+func (c *Config) SetIsTracking(tracking bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.isTracking = tracking
+	// We don't necessarily need to persist "IsTracking" pausing across restarts,
+	// but it doesn't hurt. We'll leave it in memory for now unless requested.
+	return nil 
+}
+
+// save writes the current configuration back to the .env file.
+// It assumes the caller already holds the lock.
+func (c *Config) save() error {
+	// Read existing to preserve other vars like TELEGRAM_TOKEN
+	envMap, err := godotenv.Read()
+	if err != nil {
+		envMap = make(map[string]string)
+	}
+
+	envMap["TARGET_URL"] = c.targetURL
+	envMap["TARGET_PRICE"] = fmt.Sprintf("%.2f", c.targetPrice)
+	envMap["CHECK_INTERVAL"] = fmt.Sprintf("%.0f", c.checkInterval.Seconds())
+	if c.smartNotifications {
+		envMap["SMART_NOTIFICATIONS"] = "true"
+	} else {
+		envMap["SMART_NOTIFICATIONS"] = "false"
+	}
+
+	// Make sure we keep the critical bot tokens intact
+	envMap["TELEGRAM_TOKEN"] = c.telegramToken
+	envMap["CHAT_ID"] = fmt.Sprintf("%d", c.chatID)
+
+	return godotenv.Write(envMap, ".env")
 }

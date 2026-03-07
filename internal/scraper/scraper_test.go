@@ -69,7 +69,6 @@ func TestIntegration_AmazonScraper(t *testing.T) {
 		}
 
 		log.Printf("Live new price found: %.2f EUR", res.Price)
-		// Assuming price is around 999 EUR
 		if res.Price < 800 || res.Price > 1200 {
 			t.Errorf("Expected price roughly between 800 and 1200, got %.2f", res.Price)
 		}
