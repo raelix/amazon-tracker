@@ -271,17 +271,33 @@ func (b *Bot) statusText() string {
 		smart = "ON"
 	}
 
+	lastChecked := b.cfg.LastCheckedTime()
+	lastCheckedStr := "Never"
+	if !lastChecked.IsZero() {
+		lastCheckedStr = lastChecked.Format("15:04:05")
+	}
+
+	lastNotified := b.cfg.LastNotifiedTime()
+	lastNotifiedStr := "Never"
+	if !lastNotified.IsZero() {
+		lastNotifiedStr = lastNotified.Format("2006-01-02 15:04:05")
+	}
+
 	return fmt.Sprintf(
 		"📊 <b>STATUS</b>\n"+
 			"State: %s\n"+
 			"Interval: %.0fs\n"+
-			"Smart Notify: %s\n\n"+
+			"Smart Notify: %s\n"+
+			"Last Check: %s\n"+
+			"Last Alert: %s\n\n"+
 			"💰 <b>TARGET</b>\n"+
 			"Price: &lt; %.2f EUR\n\n"+
 			"🔗 <b>URL</b>\n<a href=\"%s\">Product Link</a>",
 		state,
 		b.cfg.CheckInterval().Seconds(),
 		smart,
+		lastCheckedStr,
+		lastNotifiedStr,
 		b.cfg.TargetPrice(),
 		b.cfg.TargetURL(),
 	)

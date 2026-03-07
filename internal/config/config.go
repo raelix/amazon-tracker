@@ -31,6 +31,8 @@ type Config struct {
 	coolOffBase        time.Duration
 	smartNotifications bool
 	isTracking         bool
+	lastCheckedTime    time.Time
+	lastNotifiedTime   time.Time
 }
 
 // Load reads the .env file (if present) and populates a Config with
@@ -142,6 +144,18 @@ func (c *Config) IsTracking() bool {
 	return c.isTracking
 }
 
+func (c *Config) LastCheckedTime() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastCheckedTime
+}
+
+func (c *Config) LastNotifiedTime() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastNotifiedTime
+}
+
 // ── Setters ─────────────────────────────────────────────────────────────
 
 func (c *Config) SetTargetURL(url string) error {
@@ -179,6 +193,18 @@ func (c *Config) SetIsTracking(tracking bool) error {
 	// We don't necessarily need to persist "IsTracking" pausing across restarts,
 	// but it doesn't hurt. We'll leave it in memory for now unless requested.
 	return nil 
+}
+
+func (c *Config) SetLastCheckedTime(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastCheckedTime = t
+}
+
+func (c *Config) SetLastNotifiedTime(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastNotifiedTime = t
 }
 
 // save writes the current configuration back to the .env file.
