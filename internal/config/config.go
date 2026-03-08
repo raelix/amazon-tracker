@@ -175,6 +175,12 @@ type Item struct {
 	LastCheckedTime   time.Time `json:"-"`
 	LastNotifiedTime  time.Time `json:"-"`
 	LastNotifiedPrice float64   `json:"-"`
+
+	// Last check results — cached from the most recent scrape.
+	LastPrice     float64 `json:"-"`
+	LastUsedPrice float64 `json:"-"`
+	LastCondition string  `json:"-"`
+	LastAvailable bool    `json:"-"`
 }
 
 // Label returns a short human-readable label for Telegram display.

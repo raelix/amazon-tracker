@@ -87,7 +87,9 @@ func (b *Bot) SendRaw(text string) error {
 }
 
 // SendItemCheckResult sends the result of a scrape for a specific item.
-func (b *Bot) SendItemCheckResult(item *config.Item, available bool, price, usedPrice float64, condition string, isManual bool) {
+// It reads from the item's cached Last* fields, so it is always consistent
+// with the "Last Check" button display.
+func (b *Bot) SendItemCheckResult(item *config.Item, isManual bool) {
 	L := b.lang
 	header := L.CheckResult
 	if !isManual {
@@ -95,14 +97,14 @@ func (b *Bot) SendItemCheckResult(item *config.Item, available bool, price, used
 	}
 
 	var body string
-	if available && price > 0 {
+	if item.LastAvailable && item.LastPrice > 0 {
 		emoji := "✅"
-		if price > item.TargetPrice {
+		if item.LastPrice > item.TargetPrice {
 			emoji = "⚠️"
 		}
-		body = fmt.Sprintf(L.AvailableNew, emoji, item.Label(), price, item.TargetPrice)
-	} else if usedPrice > 0 {
-		body = fmt.Sprintf(L.OutOfStockUsed, item.Label(), usedPrice)
+		body = fmt.Sprintf(L.AvailableNew, emoji, item.Label(), item.LastPrice, item.TargetPrice)
+	} else if item.LastUsedPrice > 0 {
+		body = fmt.Sprintf(L.OutOfStockUsed, item.Label(), item.LastUsedPrice)
 	} else {
 		body = fmt.Sprintf(L.OutOfStock, item.Label())
 	}
@@ -399,6 +401,47 @@ func (b *Bot) handleCallback(cq *tgbotapi.CallbackQuery) {
 		b.resetState()
 		b.editMessageToItemList(chatID, msgID)
 
+	case strings.HasPrefix(data, "lastcheck:"):
+		b.resetState()
+		id := b.parseID(data, "lastcheck:")
+		item := b.store.Get(id)
+		if item == nil {
+			return
+		}
+
+		var text string
+		if item.LastCheckedTime.IsZero() {
+			text = fmt.Sprintf(L.LastCheckTitle, item.ID, item.Label()) + "\n\n" + L.LastCheckNone
+		} else {
+			var body string
+			if item.LastAvailable && item.LastPrice > 0 {
+				emoji := "✅"
+				if item.LastPrice > item.TargetPrice {
+					emoji = "⚠️"
+				}
+				body = fmt.Sprintf(L.AvailableNew, emoji, item.Label(), item.LastPrice, item.TargetPrice)
+			} else if item.LastUsedPrice > 0 {
+				body = fmt.Sprintf(L.OutOfStockUsed, item.Label(), item.LastUsedPrice)
+			} else {
+				body = fmt.Sprintf(L.OutOfStock, item.Label())
+			}
+
+			text = fmt.Sprintf(L.LastCheckTitle, item.ID, item.Label()) + "\n\n" +
+				fmt.Sprintf(L.LastCheckTime, item.LastCheckedTime.Format("15:04:05")) + "\n\n" +
+				body + "\n" +
+				fmt.Sprintf("🔗 <a href=\"%s\">Link</a>", item.URL)
+		}
+
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(L.BtnBack, fmt.Sprintf("item:%d", id)),
+			),
+		)
+		edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, msgID, text, keyboard)
+		edit.ParseMode = tgbotapi.ModeHTML
+		edit.DisableWebPagePreview = true
+		b.api.Send(edit)
+
 	case strings.HasPrefix(data, "lang:"):
 		b.resetState()
 		code := strings.TrimPrefix(data, "lang:")
@@ -510,6 +553,9 @@ func (b *Bot) editMessageToItemDetail(chatID int64, msgID int, id int) {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(L.BtnEdit, fmt.Sprintf("edit:%d", id)),
 			tgbotapi.NewInlineKeyboardButtonData(L.BtnCheck, fmt.Sprintf("check:%d", id)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(L.BtnLastCheck, fmt.Sprintf("lastcheck:%d", id)),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			toggleBtn,

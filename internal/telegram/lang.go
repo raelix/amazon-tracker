@@ -54,10 +54,11 @@ type Lang struct {
 	BtnCheck  string
 	BtnPause  string
 	BtnResume string
-	BtnRemove string
-	BtnBack   string
-	BtnURL    string
-	BtnPrice  string
+	BtnRemove    string
+	BtnBack      string
+	BtnURL       string
+	BtnPrice     string
+	BtnLastCheck string
 
 	// ── Add Flow ────────────────────────────────────────────────────
 	AddPromptURL   string
@@ -93,6 +94,11 @@ type Lang struct {
 	OutOfStockUsed string // "%s out of stock (new)\nUsed offer: %.2f EUR"
 	OutOfStock     string // "%s out of stock. No offers found."
 	NoItemsToCheck string
+
+	// ── Last Check (cached result) ────────────────────────────────
+	LastCheckTitle string // "Last Check — #%d"
+	LastCheckNone  string
+	LastCheckTime  string // "Checked at: %s"
 
 	// ── Alert ───────────────────────────────────────────────────────
 	AlertTitle string
@@ -177,10 +183,11 @@ var langEN = Lang{
 	BtnCheck:  "🔍 Check",
 	BtnPause:  "⏸ Pause",
 	BtnResume: "▶️ Resume",
-	BtnRemove: "🗑 Remove",
-	BtnBack:   "🔙 Back",
-	BtnURL:    "🔗 URL",
-	BtnPrice:  "💰 Price",
+	BtnRemove:    "🗑 Remove",
+	BtnBack:      "🔙 Back",
+	BtnURL:       "🔗 URL",
+	BtnPrice:     "💰 Price",
+	BtnLastCheck: "📊 Last Check",
 
 	AddPromptURL:   "🔗 <b>Send me the Amazon product URL:</b>",
 	AddPromptPrice: "💰 <b>Now send me the target price (e.g. 900.00):</b>",
@@ -212,6 +219,10 @@ var langEN = Lang{
 	OutOfStockUsed: "❌ %s out of stock (new)\n📦 Used offer: <b>%.2f EUR</b>",
 	OutOfStock:     "❌ %s out of stock. No offers found.",
 	NoItemsToCheck: "📭 No items to check. Use /add to add items.",
+
+	LastCheckTitle: "📊 <b>Last Check — #%d</b> (%s)",
+	LastCheckNone:  "ℹ️ No check has been performed yet for this item.",
+	LastCheckTime:  "🕒 Checked at: <b>%s</b>",
 
 	AlertTitle: "🚨 <b>AMAZON SNIPER ALERT!</b>",
 	AlertItem:  "📦 Item: <b>%s</b> (#%d)",
@@ -290,10 +301,11 @@ var langIT = Lang{
 	BtnCheck:  "🔍 Controlla",
 	BtnPause:  "⏸ Pausa",
 	BtnResume: "▶️ Riprendi",
-	BtnRemove: "🗑 Rimuovi",
-	BtnBack:   "🔙 Indietro",
-	BtnURL:    "🔗 URL",
-	BtnPrice:  "💰 Prezzo",
+	BtnRemove:    "🗑 Rimuovi",
+	BtnBack:      "🔙 Indietro",
+	BtnURL:       "🔗 URL",
+	BtnPrice:     "💰 Prezzo",
+	BtnLastCheck: "📊 Ultimo Check",
 
 	AddPromptURL:   "🔗 <b>Inviami l'URL del prodotto Amazon:</b>",
 	AddPromptPrice: "💰 <b>Ora inviami il prezzo obiettivo (es. 900.00):</b>",
@@ -325,6 +337,10 @@ var langIT = Lang{
 	OutOfStockUsed: "❌ %s esaurito (nuovo)\n📦 Offerta usato: <b>%.2f EUR</b>",
 	OutOfStock:     "❌ %s esaurito. Nessuna offerta trovata.",
 	NoItemsToCheck: "📭 Nessun articolo da controllare. Usa /add per aggiungerne.",
+
+	LastCheckTitle: "📊 <b>Ultimo Check — #%d</b> (%s)",
+	LastCheckNone:  "ℹ️ Nessun controllo eseguito per questo articolo.",
+	LastCheckTime:  "🕒 Controllato alle: <b>%s</b>",
 
 	AlertTitle: "🚨 <b>AMAZON SNIPER ALERT!</b>",
 	AlertItem:  "📦 Articolo: <b>%s</b> (#%d)",
