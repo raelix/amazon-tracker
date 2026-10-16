@@ -1,4 +1,5 @@
 .env
 items.json
-sniper
-sniper-x86
+/sniper
+/sniper-x86
+/sniper-mac
