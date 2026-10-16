@@ -114,16 +114,13 @@ func (s *Scraper) parse(doc *goquery.Selection) (*Result, error) {
 	hasUsedOnlyBuybox := doc.Find("#usedOnlyBuybox").Length() > 0
 	if hasUsedOnlyBuybox {
 		res.Condition = "used"
-		priceStr := doc.Find("#corePrice_feature_div .a-price-whole").First().Text()
-		if priceStr == "" {
+		p, ok := parsePrice(doc.Find("#corePrice_feature_div"))
+		if !ok {
 			// Fallback: If it's a completely used-only page, the price is often locked in the 'other sellers' ingress
-			priceStr = doc.Find("#aod-ingress-link .a-price-whole").First().Text()
+			p, ok = parsePrice(doc.Find("#aod-ingress-link"))
 		}
-		priceStr = cleanPriceString(priceStr)
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				res.UsedPrice = p
-			}
+		if ok {
+			res.UsedPrice = p
 		}
 	}
 
@@ -135,25 +132,17 @@ func (s *Scraper) parse(doc *goquery.Selection) (*Result, error) {
 
 	// If accordion parse didn't find a new price but the buybox is new, grab the buybox price
 	if res.Price == 0 && !isUsed && !hasUsedOnlyBuybox {
-		priceStr := doc.Find("#corePrice_feature_div .a-price-whole").First().Text()
-		priceStr = cleanPriceString(priceStr)
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				res.Price = p
-				res.Available = true
-				res.Condition = "new"
-			}
+		if p, ok := parsePrice(doc.Find("#corePrice_feature_div")); ok {
+			res.Price = p
+			res.Available = true
+			res.Condition = "new"
 		}
 	}
 
 	// 3. One last fallback to ensure we catch a UsedPrice if the page defaults to it
 	if res.UsedPrice == 0 {
-		priceStr := doc.Find("#aod-ingress-link .a-price-whole").First().Text()
-		priceStr = cleanPriceString(priceStr)
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				res.UsedPrice = p
-			}
+		if p, ok := parsePrice(doc.Find("#aod-ingress-link")); ok {
+			res.UsedPrice = p
 		}
 	}
 
@@ -181,12 +170,8 @@ func (s *Scraper) checkBuyBox(doc *goquery.Selection, res *Result) bool {
 
 	if strings.Contains(strings.ToLower(conditionText), "usat") || strings.Contains(strings.ToLower(buyboxStr), "usat") {
 		res.Condition = "used"
-		priceStr := doc.Find("#corePrice_feature_div .a-price-whole").First().Text()
-		priceStr = cleanPriceString(priceStr)
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				res.UsedPrice = p
-			}
+		if p, ok := parsePrice(doc.Find("#corePrice_feature_div")); ok {
+			res.UsedPrice = p
 		}
 		return true
 	}
@@ -196,27 +181,37 @@ func (s *Scraper) checkBuyBox(doc *goquery.Selection, res *Result) bool {
 func (s *Scraper) parseAccordionPrices(doc *goquery.Selection, res *Result) {
 	newRow := doc.Find("div[id^='newAccordionRow']")
 	if newRow.Length() > 0 {
-		priceStr := newRow.Find(".a-price-whole").First().Text()
-		priceStr = cleanPriceString(priceStr)
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				res.Price = p
-				res.Condition = "new"
-				res.Available = true
-			}
+		if p, ok := parsePrice(newRow); ok {
+			res.Price = p
+			res.Condition = "new"
+			res.Available = true
 		}
 	}
 
 	usedRow := doc.Find("div[id^='usedAccordionRow']")
 	if usedRow.Length() > 0 {
-		priceStr := usedRow.Find(".a-price-whole").First().Text()
-		priceStr = cleanPriceString(priceStr)
-		if priceStr != "" {
-			if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-				res.UsedPrice = p
-			}
+		if p, ok := parsePrice(usedRow); ok {
+			res.UsedPrice = p
 		}
 	}
+}
+
+// parsePrice reads the first Amazon price inside sel, combining the whole
+// part (e.g. "1.049,") with the cents in .a-price-fraction (e.g. "99").
+func parsePrice(sel *goquery.Selection) (float64, bool) {
+	whole := sel.Find(".a-price-whole").First()
+	priceStr := strings.TrimSuffix(cleanPriceString(whole.Text()), ".")
+	if priceStr == "" {
+		return 0, false
+	}
+	if fraction := strings.TrimSpace(whole.NextAllFiltered(".a-price-fraction").First().Text()); fraction != "" {
+		priceStr += "." + fraction
+	}
+	p, err := strconv.ParseFloat(priceStr, 64)
+	if err != nil {
+		return 0, false
+	}
+	return p, true
 }
 
 // cleanPriceString sanitizes the Amazon format (e.g., "1.049,00" -> "1049.00")
