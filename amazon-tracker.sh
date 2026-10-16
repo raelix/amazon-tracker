@@ -69,6 +69,12 @@ start() {
 stop() {
 	if is_loaded; then
 		launchctl bootout "$DOMAIN/$LABEL"
+		# bootout is asynchronous: wait until the service is really gone.
+		i=0
+		while is_loaded && [ "$i" -lt 20 ]; do
+			sleep 0.5
+			i=$((i + 1))
+		done
 		echo "Fermato."
 	else
 		echo "Non in esecuzione."
