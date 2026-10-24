@@ -31,7 +31,8 @@ type monitor struct {
 	bot        *telegram.Bot
 	httpClient tls_client.HttpClient
 	primed     bool
-	blocks     int // consecutive anti-bot blocks
+	blocks     int  // consecutive anti-bot blocks
+	wrongLoc   bool // last check hit a non-Italian delivery location
 }
 
 func main() {
@@ -136,12 +137,8 @@ func (m *monitor) forceCheck(id int) {
 // runCycle checks the given items. It returns a non-zero cool-off duration
 // if Amazon blocked a request, in which case the cycle is aborted.
 func (m *monitor) runCycle(items []*config.Item, isManual bool) time.Duration {
-	if !m.primed {
-		if err := scraper.New(m.httpClient, "").PrimeSession(); err != nil {
-			log.Printf("[WARN] Session priming failed: %v", err)
-		} else {
-			m.primed = true
-		}
+	if !m.primed && len(items) > 0 {
+		m.prime(items[0].URL)
 	}
 
 	for i, item := range items {
@@ -156,12 +153,21 @@ func (m *monitor) runCycle(items []*config.Item, isManual bool) time.Duration {
 			if errors.As(err, &blocked) {
 				return m.handleBlocked(item, blocked)
 			}
+			var wrongLoc *scraper.LocationError
+			if errors.As(err, &wrongLoc) {
+				m.handleWrongLocation(item, wrongLoc)
+				return 0
+			}
 			log.Printf("[ERROR] #%d (%s): %v", item.ID, item.Label(), err)
 			_ = m.bot.SendRaw(fmt.Sprintf(m.bot.Lang().CheckError, item.ID, item.Label(), err))
 			continue
 		}
 
 		m.blocks = 0
+		if m.wrongLoc {
+			m.wrongLoc = false
+			log.Printf("[INFO] Delivery location is Italian again.")
+		}
 		item.LastCheckedTime = time.Now()
 		item.LastPrice = res.Price
 		item.LastUsedPrice = res.UsedPrice
@@ -177,6 +183,32 @@ func (m *monitor) runCycle(items []*config.Item, isManual bool) time.Duration {
 		m.maybeAlert(item, res)
 	}
 	return 0
+}
+
+// prime warms up the session and sets the Italian delivery location, using
+// productURL as the page the location modal is opened from.
+func (m *monitor) prime(productURL string) {
+	if err := scraper.New(m.httpClient, "").PrimeSession(); err != nil {
+		log.Printf("[WARN] Session priming failed: %v", err)
+		return
+	}
+	if err := scraper.New(m.httpClient, productURL).SetDeliveryZip(m.cfg.DeliveryZip()); err != nil {
+		log.Printf("[WARN] Setting delivery postcode %s failed: %v", m.cfg.DeliveryZip(), err)
+		return
+	}
+	log.Printf("[INFO] Session primed, delivery postcode %s.", m.cfg.DeliveryZip())
+	m.primed = true
+}
+
+// handleWrongLocation re-primes the session next cycle. It notifies on
+// Telegram only when the problem starts, not on every cycle.
+func (m *monitor) handleWrongLocation(item *config.Item, err *scraper.LocationError) {
+	m.primed = false
+	log.Printf("[WARN] #%d (%s): %v. Re-priming next cycle.", item.ID, item.Label(), err)
+	if !m.wrongLoc {
+		m.wrongLoc = true
+		_ = m.bot.SendRaw(fmt.Sprintf(m.bot.Lang().CheckError, item.ID, item.Label(), err))
+	}
 }
 
 // maybeAlert sends a price alert when the new-condition price is at or below

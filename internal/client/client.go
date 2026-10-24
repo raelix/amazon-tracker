@@ -3,9 +3,12 @@
 package client
 
 import (
+	"io"
 	"math/rand"
+	"strings"
 
 	http "github.com/bogdanfinn/fhttp"
+	"github.com/bogdanfinn/fhttp/cookiejar"
 	tls_client "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 )
@@ -32,7 +35,15 @@ func RandomUA() string {
 //   - HTTP/2 pseudo-header order (:method, :authority, :scheme, :path)
 //   - Connection flow matching Chrome 124
 func New() (tls_client.HttpClient, error) {
-	jar := tls_client.NewCookieJar()
+	// Use the RFC 6265 jar rather than tls_client.NewCookieJar: the latter keys
+	// cookies by name only and ignores Expires, so Amazon's expired
+	// ".www.amazon.it" deletion cookies overwrite the live ".amazon.it" session
+	// (session-id becomes "-") and no session state, like the delivery
+	// location, survives between requests.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
 
 	options := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(30),
@@ -114,5 +125,41 @@ func BuildRequest(targetURL string) (*http.Request, error) {
 		},
 	}
 
+	return req, nil
+}
+
+// BuildXHR creates a same-origin XMLHttpRequest-style request, as Amazon's
+// page scripts send to their AJAX endpoints. token is sent as the
+// anti-csrftoken-a2z header; a non-empty body is sent as JSON.
+func BuildXHR(method, targetURL, referer, token, body string) (*http.Request, error) {
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, targetURL, r)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header = http.Header{
+		"sec-ch-ua":          {`"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"`},
+		"sec-ch-ua-mobile":   {"?0"},
+		"sec-ch-ua-platform": {`"Windows"`},
+		"anti-csrftoken-a2z": {token},
+		"x-requested-with":   {"XMLHttpRequest"},
+		"user-agent":         {RandomUA()},
+		"accept":             {"text/html,*/*"},
+		"origin":             {"https://www.amazon.it"},
+		"sec-fetch-site":     {"same-origin"},
+		"sec-fetch-mode":     {"cors"},
+		"sec-fetch-dest":     {"empty"},
+		"referer":            {referer},
+		"accept-encoding":    {"gzip, deflate, br, zstd"},
+		"accept-language":    {"it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"},
+		http.PHeaderOrderKey: {":method", ":authority", ":scheme", ":path"},
+	}
+	if body != "" {
+		req.Header.Set("content-type", "application/json")
+	}
 	return req, nil
 }

@@ -2,13 +2,17 @@
 package scraper
 
 import (
+	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
 
 	"amazon-tracker/internal/client"
@@ -36,6 +40,23 @@ type BlockedError struct {
 func (e *BlockedError) Error() string {
 	return fmt.Errorf("amazon blocked request (HTTP %d)", e.StatusCode).Error()
 }
+
+// LocationError is returned when Amazon is not delivering to an Italian
+// postcode, so availability and prices on the page are not the Italian ones
+// (e.g. an IP geolocated abroad shows every item as "Non disponibile").
+type LocationError struct {
+	Location string
+}
+
+func (e *LocationError) Error() string {
+	return fmt.Sprintf("delivery location is %q, not an Italian postcode", e.Location)
+}
+
+var (
+	italianZip      = regexp.MustCompile(`\b\d{5}\b`)
+	modalTokenRe    = regexp.MustCompile(`"anti-csrftoken-a2z":"([^"]+)"`)
+	glowCSRFTokenRe = regexp.MustCompile(`CSRF_TOKEN\s*:\s*"([^"]+)"`)
+)
 
 // New initializes a Scraper for a given URL.
 func New(httpClient tls_client.HttpClient, url string) *Scraper {
@@ -66,6 +87,82 @@ func (s *Scraper) PrimeSession() error {
 	// Drain the body to allow connection reuse.
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// SetDeliveryZip sets the session's delivery location to an Italian postcode,
+// replaying the "Seleziona la tua posizione" flow: the product page carries a
+// token for the location modal, the modal carries the CSRF token for the
+// address-change call. The scraper URL must be an amazon.it product page.
+func (s *Scraper) SetDeliveryZip(zip string) error {
+	page, err := s.fetch(s.url)
+	if err != nil {
+		return err
+	}
+	m := modalTokenRe.FindStringSubmatch(html.UnescapeString(page))
+	if m == nil {
+		return fmt.Errorf("location modal token not found")
+	}
+
+	modalURL := "https://www.amazon.it/portal-migration/hz/glow/get-rendered-address-selections?deviceType=desktop&pageType=Detail&storeContext=NoStoreName&actionSource=desktop-modal"
+	modal, err := s.xhr(http.MethodGet, modalURL, m[1], "")
+	if err != nil {
+		return fmt.Errorf("location modal: %w", err)
+	}
+	m = glowCSRFTokenRe.FindStringSubmatch(modal)
+	if m == nil {
+		return fmt.Errorf("location modal has no CSRF token (no postcode input offered)")
+	}
+
+	body := fmt.Sprintf(`{"locationType":"LOCATION_INPUT","zipCode":%q,"deviceType":"web","storeContext":"generic","pageType":"Detail","actionSource":"glow"}`, zip)
+	out, err := s.xhr(http.MethodPost, "https://www.amazon.it/portal-migration/hz/glow/address-change?actionSource=glow", m[1], body)
+	if err != nil {
+		return fmt.Errorf("address change: %w", err)
+	}
+	var res struct {
+		Successful int `json:"successful"`
+		Address    struct {
+			CountryCode string `json:"countryCode"`
+		} `json:"address"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil || res.Successful != 1 || res.Address.CountryCode != "IT" {
+		return fmt.Errorf("address change rejected: %.200q", out)
+	}
+	return nil
+}
+
+func (s *Scraper) fetch(url string) (string, error) {
+	req, err := client.BuildRequest(url)
+	if err != nil {
+		return "", err
+	}
+	return s.do(req)
+}
+
+func (s *Scraper) xhr(method, url, token, body string) (string, error) {
+	req, err := client.BuildXHR(method, url, s.url, token, body)
+	if err != nil {
+		return "", err
+	}
+	return s.do(req)
+}
+
+func (s *Scraper) do(req *fhttp.Request) (string, error) {
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http do: %w", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode == 503 || resp.StatusCode == 403 {
+		return "", &BlockedError{StatusCode: resp.StatusCode}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+	return string(b), nil
 }
 
 // Check performs a single scrape of the product URL.
@@ -105,12 +202,19 @@ func (s *Scraper) parse(doc *goquery.Selection) (*Result, error) {
 		Condition: "unknown",
 	}
 
-	// 1. Check if the product is completely out of stock
+	// 0. Prices and availability are only meaningful for an Italian address.
+	if loc := strings.TrimSpace(doc.Find("#glow-ingress-line2").Text()); loc != "" && !italianZip.MatchString(loc) {
+		return nil, &LocationError{Location: loc}
+	}
+
+	// 1. Check if the product is completely out of stock. "Attualmente non
+	// disponibile" items that can still be ordered (shipped when back in
+	// stock) keep an add-to-cart button and a price, so parse those.
 	outOfStockText := doc.Find("#availability .a-color-state").Text()
-	if strings.Contains(outOfStockText, "Attualmente non disponibile") {
+	if strings.Contains(outOfStockText, "Attualmente non disponibile") && doc.Find("#add-to-cart-button").Length() == 0 {
 		return res, nil
 	}
-	
+
 	hasUsedOnlyBuybox := doc.Find("#usedOnlyBuybox").Length() > 0
 	if hasUsedOnlyBuybox {
 		res.Condition = "used"

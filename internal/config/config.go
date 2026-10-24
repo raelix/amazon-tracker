@@ -32,6 +32,9 @@ type Config struct {
 
 	// Language ("en" or "it")
 	language string
+
+	// Italian postcode set as the Amazon delivery location
+	deliveryZip string
 }
 
 // Load reads the .env file (if present) and populates a Config from
@@ -52,6 +55,7 @@ func Load() (*Config, error) {
 
 		smartNotifications: true,
 		language:           "en",
+		deliveryZip:        "20121",
 	}
 
 	if v := os.Getenv("CHECK_INTERVAL"); v != "" {
@@ -66,6 +70,10 @@ func Load() (*Config, error) {
 
 	if v := os.Getenv("LANGUAGE"); v == "it" || v == "en" {
 		cfg.language = v
+	}
+
+	if v := os.Getenv("DELIVERY_ZIP"); v != "" {
+		cfg.deliveryZip = v
 	}
 
 	if cfg.telegramToken == "" || cfg.chatID == 0 {
@@ -117,6 +125,12 @@ func (c *Config) Language() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.language
+}
+
+func (c *Config) DeliveryZip() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.deliveryZip
 }
 
 // ── Config Setters ──────────────────────────────────────────────────────
