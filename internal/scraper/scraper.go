@@ -188,7 +188,14 @@ func (s *Scraper) Check() (*Result, error) {
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	// Read the whole body before parsing: streaming resp.Body into goquery
+	// intermittently produced a page without price or add-to-cart, so an
+	// orderable item flickered to "unavailable" and re-triggered alerts.
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(raw)))
 	if err != nil {
 		return nil, fmt.Errorf("parse html: %w", err)
 	}
